@@ -1,0 +1,127 @@
+networks:
+  fred-network:
+    driver: bridge
+
+services:
+  client:
+    image: gajda-ltd/fred-client:latest
+    container_name: fred-client
+    build:
+      context: ./Client/src
+      dockerfile: Dockerfile
+    depends_on:
+      sqledge:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__Kafka: kafka:9092
+      ConnectionStrings__SqlServer: Server=sqledge;Database=Client;User Id=sa;Password=P@ssw0rd
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    networks:
+      - fred-network
+    ports:
+      - "5080:5080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  server:
+    image: gajda-ltd/fred-server:latest
+    container_name: fred-server
+    build:
+      context: ./Server/src
+      dockerfile: Dockerfile
+    depends_on:
+      sqledge:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__Kafka: kafka:9092
+      ConnectionStrings__SqlServer: Server=sqledge;Database=Server;User Id=sa;Password=P@ssw0rd
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    networks:
+      - fred-network
+    ports:
+      - "4080:5080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  sqledge:
+    image: mcr.microsoft.com/azure-sql-edge:latest
+    container_name: azure_sql_edge
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=P@ssw0rd
+      - MSSQL_PID=Developer
+    networks:
+      - fred-network
+    # ports:
+    #   - "1433:1433"
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "P@ssw0rd", "-Q", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - sqledge_data:/var/opt/mssql
+
+  sqledge-init:
+    image: mcr.microsoft.com/azure-sql-edge:latest
+    container_name: azure_sql_edge_init
+    depends_on:
+      sqledge:
+        condition: service_healthy
+    networks:
+      - fred-network
+    volumes:
+      - ./init-db:/usr/config
+    entrypoint: /bin/bash /usr/config/init.sh
+    environment:
+      - MSSQL_SA_PASSWORD=P@ssw0rd
+
+  kafka:
+    build:
+      context: .
+      dockerfile: kafka.Dockerfile
+    image: gajdaltd/kafka:latest
+    container_name: kafka
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_NODE_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_OPTS: "-javaagent:/opt/otel-javaagent.jar"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://host.docker.internal:4318"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
+      OTEL_LOGS_EXPORTER: "otlp"
+      OTEL_METRICS_EXPORTER: "otlp"
+      OTEL_SERVICE_NAME: "kafka"
+      OTEL_TRACES_EXPORTER: "otlp"
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 15s
+      retries: 12
+      start_period: 120s
+    restart: unless-stopped
+    networks:
+      - fred-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  sqledge_data:
+    driver: local
